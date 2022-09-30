@@ -1,0 +1,43 @@
+name: Merge upstream branches
+on:
+  # every Sunday at 4AM
+  schedule:
+    - cron:  '0 4 * * 0'
+  push:
+    branches:
+      - master
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Merge upstream
+        run: |
+          set -x
+          git config --global user.name 'sgametrio'
+          git config --global user.email 'sgametrio@users.noreply.github.com'
+          git pull --unshallow  # this option is very important, you would get
+                                # complains about unrelated histories without it.
+                                # (but actions/checkout@v2 can also be instructed
+                                # to fetch all git depth right from the start)
+
+          git remote add upstream https://github.com/terraform-aws-modules/terraform-aws-eks.git
+          git fetch --tags upstream
+
+          # get latest v18 tag, create it, apply our 'master' changes and tag it as 'v18.x'
+          MAJOR_VERSION_TARGETED="v18"
+          MAJOR_VERSION_TAG="$MAJOR_VERSION_TARGETED.x"
+
+          LATEST_TAG=$(git describe --match "$MAJOR_VERSION_TARGETED.*" --abbrev=0 --tags)
+
+          if [ "$LATEST_TAG" == "$MAJOR_VERSION_TAG" ]; then
+            echo "No new tags to push."
+            exit 0
+          fi
+
+          git checkout $LATEST_TAG
+          git merge --no-edit master # merging our changes.
+          git tag --force $LATEST_TAG # so we know which upstream version this is about.
+          git tag --force $MAJOR_VERSION_TAG # so we can reference it and let Terraform do the upgrade.
+          git push --force origin $LATEST_TAG
+          git push --force origin $MAJOR_VERSION_TAG
