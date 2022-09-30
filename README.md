@@ -1,5 +1,9 @@
 # AWS EKS Terraform module
 
+## This is a fork of the official repository. Why?
+
+With the v18.x version they introduced one breaking change in the naming resources of the "self managed node groups" which causes downtime to upgrade. [This commit](https://github.com/DND-IT/terraform-aws-eks/commit/b8e535a8a98d3739050fc66660b235e036d54603) is the meaningful modification we decided to make to avoid this breaking change.
+
 Terraform module which creates AWS EKS (Kubernetes) resources
 
 [![SWUbanner](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg)](https://github.com/vshymanskyy/StandWithUkraine/blob/main/docs/README.md)
