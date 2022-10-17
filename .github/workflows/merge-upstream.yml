@@ -28,7 +28,7 @@ jobs:
           MAJOR_VERSION_TARGETED="v18"
           MAJOR_VERSION_TAG="$MAJOR_VERSION_TARGETED.x"
 
-          LATEST_TAG=$(git describe --match "$MAJOR_VERSION_TARGETED.*" --abbrev=0 --tags)
+          LATEST_TAG=$(git describe --match "$MAJOR_VERSION_TARGETED.*" --abbrev=0 --tags $(git rev-list --tags --max-count=1))
 
           if [ "$LATEST_TAG" == "$MAJOR_VERSION_TAG" ]; then
             echo "No new tags to push."
