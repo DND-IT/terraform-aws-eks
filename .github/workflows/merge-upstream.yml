@@ -11,9 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-        with:
-          token: ${{ secrets.PUSH_WORKFLOWS_GITHUB_TOKEN }}
-
       - name: Merge upstream
         run: |
           set -x
@@ -39,7 +36,9 @@ jobs:
           fi
 
           git checkout $LATEST_TAG
-          git merge --no-edit master # merging our changes.
+          git merge --no-edit --no-commit master # merging our changes.
+          git checkout --no-overlay $LATEST_TAG -- .github/workflows/ # Revert new workflows edits pushed to master
+          git commit -am "Merge 'master' into upstream $LATEST_TAG"
           git tag --force $LATEST_TAG # so we know which upstream version this is about.
           git tag --force $MAJOR_VERSION_TAG # so we can reference it and let Terraform do the upgrade.
           git push --force origin $LATEST_TAG
