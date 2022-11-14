@@ -11,6 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.PUSH_WORKFLOWS_GITHUB_TOKEN }}
+
       - name: Merge upstream
         run: |
           set -x
