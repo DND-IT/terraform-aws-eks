@@ -16,6 +16,12 @@ variable "prefix_separator" {
   default     = "-"
 }
 
+variable "use_karpenter" {
+  description = "Deploys default provisioner and NodeTemplate for karpenter"
+  type        = bool
+  default     = false
+}
+
 ################################################################################
 # Cluster
 ################################################################################
