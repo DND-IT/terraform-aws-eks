@@ -1,0 +1,32 @@
+---
+apiVersion: karpenter.sh/v1alpha5
+kind: Provisioner
+metadata:
+  name: default
+spec:
+  taints:
+    - key: karpenter.sh/default
+      effect: NoSchedule
+  requirements:
+    - key: "karpenter.k8s.aws/instance-hypervisor"
+      operator: In
+      values: ["nitro"]
+    - key: "karpenter.k8s.aws/instance-category"
+      operator: In
+      values: ["m", "t", "c"]
+    - key: karpenter.sh/capacity-type
+      operator: In
+      values: ["spot", "on-demand"]
+    - key: "kubernetes.io/arch"
+      operator: In
+      values: ["arm64", "amd64"]
+    - key: "kubernetes.io/os"
+      operator: In
+      values: ["linux"]
+  providerRef:
+    name: default
+  # Can only have tllsSecondsAfterEmpty OR consolidation
+  # ttlSecondsAfterEmpty: 30
+  consolidation:
+    enabled: true
+  ttlSecondsUntilExpired: 2592000 # 30 Days # Good for recycling nodes and deploying latest AMI
