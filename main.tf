@@ -11,6 +11,29 @@ locals {
 ################################################################################
 # Cluster
 ################################################################################
+data "kubectl_path_documents" "docs" {
+  pattern = "./manifests/*.yaml"
+  vars = {
+    cluster_name = aws_eks_cluster.this[0].id
+  }
+}
+
+data "kubectl_path_documents" "karpenter_docs" {
+  count = use_karpenter ? 1 : 0
+  pattern = "./manifests/*.yaml"
+  vars = {
+    cluster_name = aws_eks_cluster.this[0].id
+  }
+}
+
+resource "kubectl_manifest" "karpenter_manifests" {
+  for_each  = data.kubectl_path_documents.karpenter_docs.manifests
+  yaml_body = each.value
+
+  depends_on = [
+    module.eks_blueprints_addons.karpenter
+  ]
+}
 
 resource "aws_eks_cluster" "this" {
   count = local.create ? 1 : 0
