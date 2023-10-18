@@ -338,6 +338,8 @@ resource "aws_iam_policy" "cluster_encryption" {
 ################################################################################
 # EKS Addons
 ################################################################################
+## This resource has been manually changed compared to the original module.
+## The goal is been able to use configuration_vakues proprty for running coredns on fargate
 
 resource "aws_eks_addon" "this" {
   for_each = { for k, v in var.cluster_addons : k => v if local.create }
