@@ -69,9 +69,16 @@ resource "aws_eks_cluster" "this" {
 
   lifecycle {
     # `bootstrap_cluster_creator_admin_permissions` can only be set on cluster
-    # creation; changing it afterwards would force a cluster replacement
+    # creation; changing it afterwards would force a cluster replacement.
+    #
+    # `encryption_config` is applied on create but ignored on update: EKS only
+    # allows adding secrets encryption in-place, while removing or changing it
+    # is a destructive (ForceNew) operation. Ignoring it keeps an existing
+    # cluster from being replaced when the resolved config would otherwise drop
+    # the block (e.g. while moving the cluster into another module).
     ignore_changes = [
       access_config[0].bootstrap_cluster_creator_admin_permissions,
+      encryption_config,
     ]
   }
 }
