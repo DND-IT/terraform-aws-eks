@@ -76,8 +76,15 @@ resource "aws_eks_cluster" "this" {
     # is a destructive (ForceNew) operation. Ignoring it keeps an existing
     # cluster from being replaced when the resolved config would otherwise drop
     # the block (e.g. while moving the cluster into another module).
+    #
+    # `authentication_mode` is applied on create but ignored on update: EKS only
+    # permits one-directional transitions (CONFIG_MAP -> API_AND_CONFIG_MAP ->
+    # API), so a module default that doesn't match an already-migrated cluster
+    # would otherwise error (e.g. "Unsupported authentication mode update from
+    # API to API_AND_CONFIG_MAP"). Manage further transitions out-of-band.
     ignore_changes = [
       access_config[0].bootstrap_cluster_creator_admin_permissions,
+      access_config[0].authentication_mode,
       encryption_config,
     ]
   }
