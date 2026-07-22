@@ -28,6 +28,11 @@ resource "aws_eks_cluster" "this" {
     public_access_cidrs     = var.cluster_endpoint_public_access_cidrs
   }
 
+  access_config {
+    authentication_mode                         = var.authentication_mode
+    bootstrap_cluster_creator_admin_permissions = var.bootstrap_cluster_creator_admin_permissions
+  }
+
   kubernetes_network_config {
     ip_family         = var.cluster_ip_family
     service_ipv4_cidr = var.cluster_service_ipv4_cidr
@@ -61,6 +66,14 @@ resource "aws_eks_cluster" "this" {
     aws_security_group_rule.node,
     aws_cloudwatch_log_group.this
   ]
+
+  lifecycle {
+    # `bootstrap_cluster_creator_admin_permissions` can only be set on cluster
+    # creation; changing it afterwards would force a cluster replacement
+    ignore_changes = [
+      access_config[0].bootstrap_cluster_creator_admin_permissions,
+    ]
+  }
 }
 
 resource "aws_ec2_tag" "cluster_primary_security_group" {
@@ -263,30 +276,29 @@ resource "aws_iam_role" "this" {
   permissions_boundary  = var.iam_role_permissions_boundary
   force_detach_policies = true
 
-  # https://github.com/terraform-aws-modules/terraform-aws-eks/issues/920
-  # Resources running on the cluster are still generaring logs when destroying the module resources
-  # which results in the log group being re-created even after Terraform destroys it. Removing the
-  # ability for the cluster role to create the log group prevents this log group from being re-created
-  # outside of Terraform due to services still generating logs during destroy process
-  dynamic "inline_policy" {
-    for_each = var.create_cloudwatch_log_group ? [1] : []
-    content {
-      name = local.iam_role_name
-
-      policy = jsonencode({
-        Version = "2012-10-17"
-        Statement = [
-          {
-            Action   = ["logs:CreateLogGroup"]
-            Effect   = "Deny"
-            Resource = aws_cloudwatch_log_group.this[0].arn
-          },
-        ]
-      })
-    }
-  }
-
   tags = merge(var.tags, var.iam_role_tags)
+}
+
+# https://github.com/terraform-aws-modules/terraform-aws-eks/issues/920
+# Resources running on the cluster are still generating logs when destroying the module resources
+# which results in the log group being re-created even after Terraform destroys it. Removing the
+# ability for the cluster role to create the log group prevents this log group from being re-created
+# outside of Terraform due to services still generating logs during destroy process
+resource "aws_iam_role_policy" "cluster" {
+  count = local.create_iam_role && var.create_cloudwatch_log_group ? 1 : 0
+
+  name = local.iam_role_name
+  role = aws_iam_role.this[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = ["logs:CreateLogGroup"]
+        Effect   = "Deny"
+        Resource = aws_cloudwatch_log_group.this[0].arn
+      },
+    ]
+  })
 }
 
 # Policies attached ref https://docs.aws.amazon.com/eks/latest/userguide/service_IAM_role.html
@@ -355,8 +367,6 @@ resource "aws_eks_addon" "this" {
 
   depends_on = [
     module.fargate_profile,
-    module.eks_managed_node_group,
-    module.self_managed_node_group,
   ]
 
   tags = var.tags
@@ -387,28 +397,86 @@ resource "aws_eks_identity_provider_config" "this" {
 }
 
 ################################################################################
+# Access Entry
+################################################################################
+
+locals {
+  # Flatten the policy associations nested within each access entry into a single
+  # map keyed by "<entry key>_<policy key>" so they can be created with for_each
+  flattened_access_entry_policies = merge([
+    for entry_key, entry in var.access_entries : {
+      for policy_key, policy in lookup(entry, "policy_associations", {}) :
+      "${entry_key}_${policy_key}" => {
+        principal_arn = entry.principal_arn
+        policy_arn    = policy.policy_arn
+        access_scope  = policy.access_scope
+      }
+    }
+  ]...)
+}
+
+resource "aws_eks_access_entry" "this" {
+  for_each = { for k, v in var.access_entries : k => v if local.create }
+
+  cluster_name      = aws_eks_cluster.this[0].name
+  principal_arn     = each.value.principal_arn
+  kubernetes_groups = lookup(each.value, "kubernetes_groups", null)
+  type              = lookup(each.value, "type", "STANDARD")
+  user_name         = lookup(each.value, "user_name", null)
+
+  tags = merge(var.tags, lookup(each.value, "tags", {}))
+}
+
+resource "aws_eks_access_policy_association" "this" {
+  for_each = { for k, v in local.flattened_access_entry_policies : k => v if local.create }
+
+  cluster_name  = aws_eks_cluster.this[0].name
+  principal_arn = each.value.principal_arn
+  policy_arn    = each.value.policy_arn
+
+  access_scope {
+    type       = lookup(each.value.access_scope, "type", "cluster")
+    namespaces = lookup(each.value.access_scope, "namespaces", null)
+  }
+
+  depends_on = [
+    aws_eks_access_entry.this,
+  ]
+}
+
+# Grant the identity used by Terraform cluster administrator access via an access
+# entry. Preferred over `bootstrap_cluster_creator_admin_permissions` since it
+# can be added/removed without replacing the cluster
+resource "aws_eks_access_entry" "cluster_creator" {
+  count = local.create && var.enable_cluster_creator_admin_permissions ? 1 : 0
+
+  cluster_name  = aws_eks_cluster.this[0].name
+  principal_arn = data.aws_caller_identity.current.arn
+  type          = "STANDARD"
+
+  tags = var.tags
+}
+
+resource "aws_eks_access_policy_association" "cluster_creator" {
+  count = local.create && var.enable_cluster_creator_admin_permissions ? 1 : 0
+
+  cluster_name  = aws_eks_cluster.this[0].name
+  principal_arn = aws_eks_access_entry.cluster_creator[0].principal_arn
+  policy_arn    = "arn:${data.aws_partition.current.partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+}
+
+################################################################################
 # aws-auth configmap
 ################################################################################
 
 locals {
-  node_iam_role_arns_non_windows = distinct(
-    compact(
-      concat(
-        [for group in module.eks_managed_node_group : group.iam_role_arn],
-        [for group in module.self_managed_node_group : group.iam_role_arn if group.platform != "windows"],
-        var.aws_auth_node_iam_role_arns_non_windows,
-      )
-    )
-  )
+  node_iam_role_arns_non_windows = distinct(compact(var.aws_auth_node_iam_role_arns_non_windows))
 
-  node_iam_role_arns_windows = distinct(
-    compact(
-      concat(
-        [for group in module.self_managed_node_group : group.iam_role_arn if group.platform == "windows"],
-        var.aws_auth_node_iam_role_arns_windows,
-      )
-    )
-  )
+  node_iam_role_arns_windows = distinct(compact(var.aws_auth_node_iam_role_arns_windows))
 
   fargate_profile_pod_execution_role_arns = distinct(
     compact(

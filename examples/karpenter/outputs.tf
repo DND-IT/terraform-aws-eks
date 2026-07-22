@@ -150,38 +150,24 @@ output "fargate_profiles" {
 }
 
 ################################################################################
-# EKS Managed Node Group
+# Access Entry
 ################################################################################
 
-output "eks_managed_node_groups" {
-  description = "Map of attribute maps for all EKS managed node groups created"
-  value       = module.eks.eks_managed_node_groups
-}
-
-output "eks_managed_node_groups_autoscaling_group_names" {
-  description = "List of the autoscaling group names created by EKS managed node groups"
-  value       = module.eks.eks_managed_node_groups_autoscaling_group_names
+output "access_entries" {
+  description = "Map of access entries created and their attributes"
+  value       = module.eks.access_entries
 }
 
 ################################################################################
-# Self Managed Node Group
+# Karpenter
 ################################################################################
 
-output "self_managed_node_groups" {
-  description = "Map of attribute maps for all self managed node groups created"
-  value       = module.eks.self_managed_node_groups
+output "karpenter_node_iam_role_arn" {
+  description = "IAM role ARN used by Karpenter-provisioned nodes"
+  value       = aws_iam_role.karpenter_node.arn
 }
 
-output "self_managed_node_groups_autoscaling_group_names" {
-  description = "List of the autoscaling group names created by self-managed node groups"
-  value       = module.eks.self_managed_node_groups_autoscaling_group_names
-}
-
-################################################################################
-# Additional
-################################################################################
-
-output "aws_auth_configmap_yaml" {
-  description = "Formatted yaml output for base aws-auth configmap containing roles used in cluster node groups/fargate profiles"
-  value       = module.eks.aws_auth_configmap_yaml
+output "karpenter_node_instance_profile_name" {
+  description = "Instance profile name used by Karpenter-provisioned nodes"
+  value       = aws_iam_instance_profile.karpenter_node.name
 }
