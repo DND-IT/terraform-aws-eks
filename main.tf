@@ -82,11 +82,11 @@ resource "aws_eks_cluster" "this" {
     # API), so a module default that doesn't match an already-migrated cluster
     # would otherwise error (e.g. "Unsupported authentication mode update from
     # API to API_AND_CONFIG_MAP"). Manage further transitions out-of-band.
-    ignore_changes = [
-      access_config[0].bootstrap_cluster_creator_admin_permissions,
-      access_config[0].authentication_mode,
-      encryption_config,
-    ]
+    # ignore_changes = [
+    #   access_config[0].bootstrap_cluster_creator_admin_permissions,
+    #   access_config[0].authentication_mode,
+    #   encryption_config,
+    # ]
   }
 }
 
