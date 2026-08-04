@@ -1,14 +1,14 @@
 terraform {
-  required_version = ">= 0.13.1"
+  required_version = ">= 1.3.2"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 3.72"
+      version = ">= 6.0"
     }
     helm = {
       source  = "hashicorp/helm"
-      version = ">= 2.4"
+      version = ">= 2.7, < 3.0"
     }
     kubectl = {
       source  = "gavinbunney/kubectl"

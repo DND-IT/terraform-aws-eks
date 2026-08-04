@@ -4,13 +4,13 @@ provider "aws" {
 
 locals {
   name            = "ex-${replace(basename(path.cwd), "_", "-")}"
-  cluster_version = "1.22"
+  cluster_version = "1.31"
   region          = "eu-west-1"
 
   tags = {
     Example    = local.name
     GithubRepo = "terraform-aws-eks"
-    GithubOrg  = "terraform-aws-modules"
+    GithubOrg  = "DND-IT"
   }
 }
 
@@ -29,12 +29,12 @@ module "eks" {
   cluster_addons = {
     # Note: https://docs.aws.amazon.com/eks/latest/userguide/fargate-getting-started.html#fargate-gs-coredns
     coredns = {
-      resolve_conflicts = "OVERWRITE"
+      configuration_values = jsonencode({
+        computeType = "Fargate"
+      })
     }
     kube-proxy = {}
-    vpc-cni = {
-      resolve_conflicts = "OVERWRITE"
-    }
+    vpc-cni    = {}
   }
 
   cluster_encryption_config = [{
@@ -45,26 +45,18 @@ module "eks" {
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
-  # You require a node group to schedule coredns which is critical for running correctly internal DNS.
-  # If you want to use only fargate you must follow docs `(Optional) Update CoreDNS`
-  # available under https://docs.aws.amazon.com/eks/latest/userguide/fargate-getting-started.html
-  eks_managed_node_groups = {
-    example = {
-      desired_size = 1
+  # Cluster access management (EKS access entries API)
+  authentication_mode                      = "API_AND_CONFIG_MAP"
+  enable_cluster_creator_admin_permissions = true
 
-      instance_types = ["t3.large"]
-      labels = {
-        Example    = "managed_node_groups"
-        GithubRepo = "terraform-aws-eks"
-        GithubOrg  = "terraform-aws-modules"
-      }
-      tags = {
-        ExtraTag = "example"
-      }
-    }
-  }
-
+  # CoreDNS runs on Fargate via the `kube-system` profile below and the addon
+  # `computeType = Fargate` configuration above
   fargate_profiles = {
+    kube-system = {
+      selectors = [
+        { namespace = "kube-system" }
+      ]
+    }
     default = {
       name = "default"
       selectors = [
@@ -123,7 +115,7 @@ module "eks" {
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 3.0"
+  version = "~> 5.0"
 
   name = local.name
   cidr = "10.0.0.0/16"

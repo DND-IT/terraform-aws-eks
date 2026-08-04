@@ -117,6 +117,34 @@ variable "cluster_timeouts" {
 }
 
 ################################################################################
+# Access Entry
+################################################################################
+
+variable "authentication_mode" {
+  description = "The authentication mode for the cluster. Valid values are `CONFIG_MAP`, `API` or `API_AND_CONFIG_MAP`"
+  type        = string
+  default     = "API_AND_CONFIG_MAP"
+}
+
+variable "access_entries" {
+  description = "Map of access entries to add to the cluster. Each entry may contain `principal_arn`, optional `kubernetes_groups`, `type`, `user_name`, `tags`, and a `policy_associations` map of `{ policy_arn, access_scope = { type, namespaces } }`"
+  type        = any
+  default     = {}
+}
+
+variable "enable_cluster_creator_admin_permissions" {
+  description = "Indicates whether or not to add the cluster creator (the identity used by Terraform) as an administrator via an access entry"
+  type        = bool
+  default     = false
+}
+
+variable "bootstrap_cluster_creator_admin_permissions" {
+  description = "Indicates whether or not to bootstrap the access entry for the cluster creator (the identity used by Terraform) as an administrator. Can only be set at cluster creation and is ignored on subsequent updates"
+  type        = bool
+  default     = true
+}
+
+################################################################################
 # KMS Key
 ################################################################################
 
@@ -486,38 +514,6 @@ variable "fargate_profiles" {
 
 variable "fargate_profile_defaults" {
   description = "Map of Fargate Profile default configurations"
-  type        = any
-  default     = {}
-}
-
-################################################################################
-# Self Managed Node Group
-################################################################################
-
-variable "self_managed_node_groups" {
-  description = "Map of self-managed node group definitions to create"
-  type        = any
-  default     = {}
-}
-
-variable "self_managed_node_group_defaults" {
-  description = "Map of self-managed node group default configurations"
-  type        = any
-  default     = {}
-}
-
-################################################################################
-# EKS Managed Node Group
-################################################################################
-
-variable "eks_managed_node_groups" {
-  description = "Map of EKS managed node group definitions to create"
-  type        = any
-  default     = {}
-}
-
-variable "eks_managed_node_group_defaults" {
-  description = "Map of EKS managed node group default configurations"
   type        = any
   default     = {}
 }

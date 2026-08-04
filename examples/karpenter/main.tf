@@ -3,17 +3,26 @@ provider "aws" {
 }
 
 data "aws_partition" "current" {}
+data "aws_ecrpublic_authorization_token" "token" {
+  provider = aws.virginia
+}
+
+# Karpenter's public ECR registry is only available in us-east-1
+provider "aws" {
+  region = "us-east-1"
+  alias  = "virginia"
+}
 
 locals {
   name            = "ex-${replace(basename(path.cwd), "_", "-")}"
-  cluster_version = "1.22"
+  cluster_version = "1.31"
   region          = "eu-west-1"
   partition       = data.aws_partition.current.partition
 
   tags = {
     Example    = local.name
     GithubRepo = "terraform-aws-eks"
-    GithubOrg  = "terraform-aws-modules"
+    GithubOrg  = "DND-IT"
   }
 }
 
@@ -32,31 +41,41 @@ module "eks" {
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
-  node_security_group_additional_rules = {
-    # Control plane invoke Karpenter webhook
-    ingress_karpenter_webhook_tcp = {
-      description                   = "Control plane invoke Karpenter webhook"
-      protocol                      = "tcp"
-      from_port                     = 8443
-      to_port                       = 8443
-      type                          = "ingress"
-      source_cluster_security_group = true
+  # Cluster access management (EKS access entries API)
+  authentication_mode                      = "API_AND_CONFIG_MAP"
+  enable_cluster_creator_admin_permissions = true
+
+  # Register the Karpenter node IAM role so that nodes it launches can join the
+  # cluster. `EC2_LINUX` access entries automatically grant the node permissions
+  access_entries = {
+    karpenter = {
+      principal_arn = aws_iam_role.karpenter_node.arn
+      type          = "EC2_LINUX"
     }
   }
 
-  eks_managed_node_groups = {
+  # Fargate profile to run the Karpenter controller and CoreDNS - no static nodes
+  fargate_profiles = {
     karpenter = {
-      instance_types = ["t3.medium"]
-
-      min_size     = 1
-      max_size     = 2
-      desired_size = 1
-
-      iam_role_additional_policies = [
-        # Required by Karpenter
-        "arn:${local.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      selectors = [
+        { namespace = "karpenter" }
       ]
     }
+    kube-system = {
+      selectors = [
+        { namespace = "kube-system" }
+      ]
+    }
+  }
+
+  cluster_addons = {
+    coredns = {
+      configuration_values = jsonencode({
+        computeType = "Fargate"
+      })
+    }
+    kube-proxy = {}
+    vpc-cni    = {}
   }
 
   tags = merge(local.tags, {
@@ -68,7 +87,70 @@ module "eks" {
 }
 
 ################################################################################
-# Karpenter
+# Karpenter IAM resources
+################################################################################
+
+data "aws_iam_policy_document" "karpenter_node_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.${data.aws_partition.current.dns_suffix}"]
+    }
+  }
+}
+
+resource "aws_iam_role" "karpenter_node" {
+  name_prefix        = "karpenter-node-${local.name}-"
+  assume_role_policy = data.aws_iam_policy_document.karpenter_node_assume_role.json
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "karpenter_node" {
+  for_each = toset([
+    "arn:${local.partition}:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+    "arn:${local.partition}:iam::aws:policy/AmazonEKS_CNI_Policy",
+    "arn:${local.partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
+    "arn:${local.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore",
+  ])
+
+  role       = aws_iam_role.karpenter_node.name
+  policy_arn = each.value
+}
+
+resource "aws_iam_instance_profile" "karpenter_node" {
+  name_prefix = "karpenter-node-${local.name}-"
+  role        = aws_iam_role.karpenter_node.name
+
+  tags = local.tags
+}
+
+module "karpenter_controller_irsa" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.39"
+
+  role_name                          = "karpenter-controller-${local.name}"
+  attach_karpenter_controller_policy = true
+
+  karpenter_controller_cluster_name = module.eks.cluster_id
+  karpenter_controller_node_iam_role_arns = [
+    aws_iam_role.karpenter_node.arn
+  ]
+
+  oidc_providers = {
+    ex = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["karpenter:karpenter"]
+    }
+  }
+
+  tags = local.tags
+}
+
+################################################################################
+# Karpenter Helm chart & manifests
 ################################################################################
 
 provider "helm" {
@@ -99,87 +181,48 @@ provider "kubectl" {
   }
 }
 
-module "karpenter_irsa" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 4.21.1"
-
-  role_name                          = "karpenter-controller-${local.name}"
-  attach_karpenter_controller_policy = true
-
-  karpenter_controller_cluster_id = module.eks.cluster_id
-  karpenter_controller_ssm_parameter_arns = [
-    "arn:${local.partition}:ssm:*:*:parameter/aws/service/*"
-  ]
-  karpenter_controller_node_iam_role_arns = [
-    module.eks.eks_managed_node_groups["karpenter"].iam_role_arn
-  ]
-
-  oidc_providers = {
-    ex = {
-      provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["karpenter:karpenter"]
-    }
-  }
-}
-
-resource "aws_iam_instance_profile" "karpenter" {
-  name = "KarpenterNodeInstanceProfile-${local.name}"
-  role = module.eks.eks_managed_node_groups["karpenter"].iam_role_name
-}
-
 resource "helm_release" "karpenter" {
-  namespace        = "karpenter"
-  create_namespace = true
-
-  name       = "karpenter"
-  repository = "https://charts.karpenter.sh"
-  chart      = "karpenter"
-  version    = "0.8.2"
-
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = module.karpenter_irsa.iam_role_arn
-  }
+  namespace           = "karpenter"
+  create_namespace    = true
+  name                = "karpenter"
+  repository          = "oci://public.ecr.aws/karpenter"
+  repository_username = data.aws_ecrpublic_authorization_token.token.user_name
+  repository_password = data.aws_ecrpublic_authorization_token.token.password
+  chart               = "karpenter"
+  version             = "1.0.6"
 
   set {
-    name  = "clusterName"
+    name  = "settings.clusterName"
     value = module.eks.cluster_id
   }
 
   set {
-    name  = "clusterEndpoint"
-    value = module.eks.cluster_endpoint
+    name  = "settings.interruptionQueue"
+    value = module.eks.cluster_id
   }
 
   set {
-    name  = "aws.defaultInstanceProfile"
-    value = aws_iam_instance_profile.karpenter.name
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.karpenter_controller_irsa.iam_role_arn
   }
 }
 
-# Workaround - https://github.com/hashicorp/terraform-provider-kubernetes/issues/1380#issuecomment-967022975
-resource "kubectl_manifest" "karpenter_provisioner" {
+resource "kubectl_manifest" "karpenter_node_class" {
   yaml_body = <<-YAML
-  apiVersion: karpenter.sh/v1alpha5
-  kind: Provisioner
+  apiVersion: karpenter.k8s.aws/v1
+  kind: EC2NodeClass
   metadata:
     name: default
   spec:
-    requirements:
-      - key: karpenter.sh/capacity-type
-        operator: In
-        values: ["spot"]
-    limits:
-      resources:
-        cpu: 1000
-    provider:
-      subnetSelector:
-        karpenter.sh/discovery: ${local.name}
-      securityGroupSelector:
-        karpenter.sh/discovery: ${local.name}
-      tags:
-        karpenter.sh/discovery: ${local.name}
-    ttlSecondsAfterEmpty: 30
+    role: ${aws_iam_role.karpenter_node.name}
+    amiSelectorTerms:
+      - alias: al2023@latest
+    subnetSelectorTerms:
+      - tags:
+          karpenter.sh/discovery: ${local.name}
+    securityGroupSelectorTerms:
+      - tags:
+          karpenter.sh/discovery: ${local.name}
   YAML
 
   depends_on = [
@@ -187,35 +230,32 @@ resource "kubectl_manifest" "karpenter_provisioner" {
   ]
 }
 
-# Example deployment using the [pause image](https://www.ianlewis.org/en/almighty-pause-container)
-# and starts with zero replicas
-resource "kubectl_manifest" "karpenter_example_deployment" {
+resource "kubectl_manifest" "karpenter_node_pool" {
   yaml_body = <<-YAML
-  apiVersion: apps/v1
-  kind: Deployment
+  apiVersion: karpenter.sh/v1
+  kind: NodePool
   metadata:
-    name: inflate
+    name: default
   spec:
-    replicas: 0
-    selector:
-      matchLabels:
-        app: inflate
     template:
-      metadata:
-        labels:
-          app: inflate
       spec:
-        terminationGracePeriodSeconds: 0
-        containers:
-          - name: inflate
-            image: public.ecr.aws/eks-distro/kubernetes/pause:3.2
-            resources:
-              requests:
-                cpu: 1
+        nodeClassRef:
+          group: karpenter.k8s.aws
+          kind: EC2NodeClass
+          name: default
+        requirements:
+          - key: karpenter.sh/capacity-type
+            operator: In
+            values: ["spot"]
+    limits:
+      cpu: 1000
+    disruption:
+      consolidationPolicy: WhenEmptyOrUnderutilized
+      consolidateAfter: 30s
   YAML
 
   depends_on = [
-    helm_release.karpenter
+    kubectl_manifest.karpenter_node_class
   ]
 }
 
@@ -225,7 +265,7 @@ resource "kubectl_manifest" "karpenter_example_deployment" {
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 3.0"
+  version = "~> 5.0"
 
   name = local.name
   cidr = "10.0.0.0/16"
@@ -239,13 +279,11 @@ module "vpc" {
   enable_dns_hostnames = true
 
   public_subnet_tags = {
-    "kubernetes.io/cluster/${local.name}" = "shared"
-    "kubernetes.io/role/elb"              = 1
+    "kubernetes.io/role/elb" = 1
   }
 
   private_subnet_tags = {
-    "kubernetes.io/cluster/${local.name}" = "shared"
-    "kubernetes.io/role/internal-elb"     = 1
+    "kubernetes.io/role/internal-elb" = 1
     # Tags subnets for Karpenter auto-discovery
     "karpenter.sh/discovery" = local.name
   }
